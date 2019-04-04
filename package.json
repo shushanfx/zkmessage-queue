@@ -1,0 +1,30 @@
+{
+  "name": "zkmessage-queue",
+  "version": "1.0.0",
+  "description": "A message queue b",
+  "main": "index.js",
+  "scripts": {
+    "test": "nodemon tests/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shushanfx/zkmessage-queue.git"
+  },
+  "keywords": [
+    "message",
+    "queue",
+    "zookeeper"
+  ],
+  "author": "shushanfx",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/shushanfx/zkmessage-queue/issues"
+  },
+  "homepage": "https://github.com/shushanfx/zkmessage-queue#readme",
+  "dependencies": {
+    "ip": "^1.1.5",
+    "log4js": "^4.1.0",
+    "node-zookeeper-client": "^0.2.3",
+    "uuid": "^3.3.2"
+  }
+}
