@@ -40,7 +40,7 @@ const logger = log4js.getLogger('server');
 const MessageQueue = require('../src/message-queue');
 const messageService = new MessageQueue({
   servers: "10.138.30.208:2181",
-  path: "/zkconfig/video_test2",
+  path: "/zkconfig/video_dev",
   username: "zkconfig",
   password: "zkconfig",
   handle: async (messageBean, done) => {
@@ -53,7 +53,7 @@ const messageService = new MessageQueue({
       } else {
         done();
       }
-    }, 100);
+    }, 10000);
   },
   handleError: async (messageBean, done) => {
     // 处理错误消息

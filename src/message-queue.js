@@ -18,7 +18,8 @@ class MessageQueue extends EventEmitter {
       registerRetryMaxTimes: 200,
       borrowRetryTimes: 2,
       returnRetryTimes: 2,
-      messageCacheTriggerCount: 50,
+      messageCacheTriggerCount: 100,
+      messageCacheMaxCount: 50,
       messageCacheRetryTimes: 2
     }, options);
     this.path = this.options.path;
@@ -57,6 +58,7 @@ class MessageQueue extends EventEmitter {
     this.registerRetryMaxTimes = this.options.registerRetryMaxTimes;
     this.isHandling = false;
     this.messageCount = 0;
+    this.isMessageCacheOn = this.options.messageCacheTriggerCount > 0 ? true : false;
   }
   connect(callback) {
     if (typeof callback === 'function') {
@@ -285,7 +287,8 @@ class MessageQueue extends EventEmitter {
     logger.debug('Delete message %s', newPath);
     this.client.remove(newPath, (err) => {
       if (err) {
-        this.deleteMessage(realID, done, iCount++);
+        logger.error('Delete message error due to %s', err);
+        this.deleteMessage(realID, done, iCount + 1);
       } else {
         // 消费消息完毕，重新可以接受消息
         logger.debug('Delete message %s success', newPath);
@@ -331,6 +334,10 @@ class MessageQueue extends EventEmitter {
       if (this.isHandling) {
         return;
       }
+      if (!this.isMessageCacheOn) {
+        this.handleMessage(true);
+        return;
+      }
       this.isHandling = true;
       this.client.getData(this.messagePath, (err, data, stat) => {
         if (err) {
@@ -355,6 +362,9 @@ class MessageQueue extends EventEmitter {
                   if (!err) {
                     logger.debug('Current thread is pedding message %s', id);
                     this.handlePedding(realID, message);
+                  } else {
+                    // 操作失败，saveCache
+                    this.saveCache([]);
                   }
                 })
               }
@@ -385,7 +395,7 @@ class MessageQueue extends EventEmitter {
       }
     });
   }
-  handleMessage(isSaveCache = false) {
+  handleMessage() {
     if (this.isConnected) {
       // logger.debug('Watch message in %s', this.messagePath);
       if (this.isHandling) {
@@ -407,11 +417,17 @@ class MessageQueue extends EventEmitter {
           // 处理消息
           this.messageCount = list.length;
           logger.debug('Message count: %d, read cost: %d', list.length, Date.now() - start);
+          let isOpenCache = this.messageCount > this.options.messageCacheTriggerCount &&
+            this.options.messageCacheTriggerCount > 0;
           start = Date.now();
-          if (isSaveCache) {
-            let cacheList = MessageUtils.getTop(list, this.options.messageCacheTriggerCount);
+          if (isOpenCache) {
+            let cacheList = MessageUtils.getTop(list, this.options.messageCacheMaxCount);
             logger.debug('Message sort: %d, cost: %d', cacheList.length, Date.now() - start);
             let item = cacheList.shift();
+            if (!this.isMessageCacheOn) {
+              logger.debug('Handle message turn on cache.');
+            }
+            this.isMessageCacheOn = true;
             this.saveCache(cacheList, (err) => {
               if (err) {
                 logger.error('Handle message children error due to %s', err);
@@ -427,10 +443,29 @@ class MessageQueue extends EventEmitter {
                   }
                 })
               }
+            });
+          } else if (this.isMessageCacheOn) {
+            // 之前开启过cache，但是条件不具备
+            logger.debug('Handle message turn off cache.');
+            this.saveCache([], (err) => {
+              if (err) {
+                logger.error('Handle message cache empty error due to %s', err);
+                this.unregister(this.queueID, true, () => {
+                  this.isHandling = false;
+                });
+              } else {
+                this.isMessageCacheOn = false;
+                let item = MessageUtils.getMin(list);
+                this.borrowMessage(item, (err, realID, message) => {
+                  if (!err) {
+                    logger.debug('Current thread is pedding message %s', item);
+                    this.handlePedding(realID, message);
+                  }
+                })
+              }
             })
           } else {
             let item = MessageUtils.getMin(list);
-
             this.borrowMessage(item, (err, realID, message) => {
               if (!err) {
                 logger.debug('Current thread is pedding message %s', item);
@@ -455,12 +490,7 @@ class MessageQueue extends EventEmitter {
       if (position === 0) {
         // 有权处理消息
         logger.debug('Current thread is in first position, begin to handle message.');
-        if (this.options.messageCacheTriggerCount > 0) {
-          // 触发条件大于0，则表示开启缓存机制
-          this.handleMessageCache();
-        } else {
-          this.handleMessage(false);
-        }
+        this.handleMessageCache();
       } else if (position > 0) {
         // 检查前辈是否存在
         logger.debug('Current thread is not in first position, register watch for %s', list[position - 1]);

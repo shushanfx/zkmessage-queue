@@ -1,6 +1,6 @@
 {
   "name": "zkmessage-queue",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A message queue b",
   "main": "index.js",
   "scripts": {
@@ -24,7 +24,7 @@
   "homepage": "https://github.com/shushanfx/zkmessage-queue#readme",
   "dependencies": {
     "ip": "^1.1.5",
-    "log4js": "^4.1.0",
+    "log4js": "^3.0.6",
     "node-zookeeper-client": "^0.2.3",
     "uuid": "^3.3.2"
   },
