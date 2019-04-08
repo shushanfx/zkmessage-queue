@@ -17,6 +17,26 @@ const MessageUtils = {
     }
     return ret;
   },
+  getTop(list, topCount = 0) {
+    let _list = list.slice(0);
+    let i = 0;
+    let ret = [];
+    while (i < topCount && _list.length > 0) {
+      let id = this.getID(_list[0]);
+      let index = 0;
+      for (let j = 1; j < _list.length; j++) {
+        let temp = this.getID(_list[j]);
+        if (temp >= 0 && temp < id) {
+          id = temp;
+          index = j;
+        }
+      }
+      ret.push(_list[index]);
+      _list.splice(index, 1);
+      i++;
+    }
+    return ret;
+  },
   getID(item) {
     if (item && typeof item === 'string') {
       let arr = REG.exec(item);
