@@ -40,25 +40,21 @@ const logger = log4js.getLogger('server');
 const MessageQueue = require('../src/message-queue');
 const messageService = new MessageQueue({
   servers: "10.138.30.208:2181",
-  path: "/zkconfig/video_dev",
+  path: "/zkconfig/video_dev2019_02",
   username: "zkconfig",
   password: "zkconfig",
-  handle: async (messageBean, done) => {
+  handle: async (messageBean) => {
     // handle message
     logger.info('Handle message: ', messageBean);
-    setTimeout(() => {
-      let random = Math.floor(Math.random() * 100);
-      if (random < 1) {
-        done(new Error('Handle fail.'));
-      } else {
-        done();
-      }
-    }, 10000);
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        resolve(true);
+      }, 1000)
+    })
   },
-  handleError: async (messageBean, done) => {
+  handleError: (messageBean) => {
     // 处理错误消息
     logger.info('Handle error message: ', messageBean);
-    done();
   }
 });
 messageService.on(MessageQueue.EVENT_CONNECT_SUCCESS, () => {

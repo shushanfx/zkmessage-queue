@@ -1,27 +1,65 @@
 const zookeeper = require('node-zookeeper-client');
-const EventEmitter = require('events').EventEmitter;
 const logger = require('log4js').getLogger('messageQueue');
 const ip = require('ip');
 const uuid = require('uuid');
+
+const AbstractMessageQueue = require('./abstract-message-queue');
 const SafeObject = require("./object-utils");
 const MessageBean = require("./message-bean");
 const MessageUtils = require('./message-utils');
 
-class MessageQueue extends EventEmitter {
+const ASYNC_FUNCTION = async function () {};
+const EMPTY_FUNCTION = function () {};
+
+const isAsyncFunction = (fun) => {
+  if (typeof fun === 'function') {
+    if (fun.constructor && fun.constructor.name === ASYNC_FUNCTION.constructor.name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+class MessageQueue extends AbstractMessageQueue {
+  /**
+   * Create a new instance
+   * @param {String} servers The zookeeper servers, split by `,`.
+   * @param {String} path The path of message, such as `/zkmessage-queue/dev`.
+   * @param {Function} handle a normal function or an asnyc function, which handle the message operation.
+   * @param {Function} handleError a normal function or an async function, which handle the error message.
+   * @param {String} [scheme] The type of auth check, default is schema.
+   * @param {String} [username] the username of the auth.
+   * @param {String} [password] the password of the auth.
+   * @param {String} [chraset] the charset of the content. default is `utf-8`.
+   * @param {Boolean} [checkExist] whether to check the existance of the path. default is `false`
+   * @param {Number} [maxConnectRetryTimes] the maxium times of connecting retry. default is `100`
+   * @param {Number} [maxRegisterRetryTimes] the maxium times of registering retry. default is `200`
+   * @param {Number} [maxBorrowRetryTimes] the maxium times of borrowing message from the message queue. default is `2`
+   * @param {Number} [maxReturnRetryTimes] the maxium times of returnning message to the mssage queue. default is `2`
+   * @param {Number} [maxHandleRetryTimes] the maxium times of handling message, while an error is thrown. default is `2`
+   * @param {Number} [cacheTriggerCount] the number of messages to trigger cache. default is `100`, 
+   *  which means system will trigger cache automatically when the size of message queue reach this number.
+   * @param {Number} [maxCacheSize] the max size of messages that cache holds. default is `50`.
+   * @param {Number} [maxCacheRetryTimes] the max retry times for saving the cache. default is `2`.
+   */
   constructor(options) {
     super()
     this.options = Object.assign({
       scheme: "digest",
-      connectMaxRetryTimes: 100,
       charset: 'utf8',
-      handleRetryMaxTimes: 10,
-      registerRetryMaxTimes: 200,
-      borrowRetryTimes: 2,
-      returnRetryTimes: 2,
-      messageCacheTriggerCount: 100,
-      messageCacheMaxCount: 50,
-      messageCacheRetryTimes: 2
+      maxConnectRetryTimes: 100,
+      maxHandleRetryTimes: 2,
+      maxRegisterRetryTimes: 200,
+      maxBorrowRetryTimes: 2,
+      maxReturnRetryTimes: 2,
+      cacheTriggerCount: 100,
+      maxCacheSize: 50,
+      messageCacheRetryTimes: 2,
+      checkExist: true
     }, options);
+    if (typeof this.options.path !== 'string') {
+      return new AbstractMessageQueue();
+    }
     this.path = this.options.path;
     this.messagePath = this.options.path + '/message'
     this.peddingPath = this.options.path + '/pedding';
@@ -55,10 +93,11 @@ class MessageQueue extends EventEmitter {
     this.unregisterRetryTimes = 0;
     this.registerRetryTimes = 0;
     this.queueRetryTimes = 0;
-    this.registerRetryMaxTimes = this.options.registerRetryMaxTimes;
+    this.maxRegisterRetryTimes = this.options.maxRegisterRetryTimes;
     this.isHandling = false;
     this.messageCount = 0;
-    this.isMessageCacheOn = this.options.messageCacheTriggerCount > 0 ? true : false;
+    this.isMessageCacheOn = this.options.cacheTriggerCount > 0 ? true : false;
+    this.isInit = false;
   }
   connect(callback) {
     if (typeof callback === 'function') {
@@ -90,8 +129,6 @@ class MessageQueue extends EventEmitter {
         me.isConnected = true;
         me.isShutdown = false;
         me._auth();
-        // 将连接注入队列
-        me.register();
         me.emit(MessageQueue.EVENT_CONNECT_SUCCESS);
       } else if (state === zookeeper.State.DISCONNECTED ||
         state === zookeeper.State.EXPIRED) {
@@ -124,6 +161,37 @@ class MessageQueue extends EventEmitter {
       this.client.addAuthInfo(this.scheme,
         Buffer.from([this.username, this.password].join(":")));
     }
+    this._generate();
+  }
+  _generate() {
+    if (!this.isInit && this.options.checkExist) {
+      let promiseGenerator = (path) => {
+        return new Promise((resolve) => {
+          this.client.exists(path, (_, stats) => {
+            resolve(!!stats);
+          });
+        }).then((isExist) => {
+          logger.debug('Generator path %s', path);
+          if (!isExist) {
+            return new Promise((resolve) => {
+              this.client.mkdirp(path, (e) => {
+                resolve(path);
+              })
+            })
+          }
+          return true;
+        });
+      }
+      promiseGenerator(this.messagePath)
+        .then(promiseGenerator(this.peddingPath))
+        .then(promiseGenerator(this.queuePath))
+        .then(() => {
+          this.isInit = true;
+          this.register();
+        });
+    } else {
+      this.register();
+    }
   }
   close() {
     this.isShutdown = true;
@@ -136,15 +204,27 @@ class MessageQueue extends EventEmitter {
     let handlerError = this.options.handleError;
     let start = Date.now();
     messageObject.realID = realID;
-    if (messageObject.retryTimes >= this.options.handleRetryMaxTimes) {
+    if (messageObject.retryTimes >= this.options.maxHandleRetryTimes) {
       // 抓取失败
       try {
-        if (handlerError) {
-          handlerError.call(this, messageObject, () => {
-            this.deleteMessage(realID, () => {
-              this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_ERROR, messageObject);
+        if (typeof handlerError === 'function') {
+          if (isAsyncFunction(handlerError)) {
+            handlerError.call(this, messageObject, EMPTY_FUNCTION).then(() => {
+              this.deleteMessage(realID, () => {
+                this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_ERROR, messageObject);
+              });
+            }).catch(() => {
+              this.deleteMessage(realID, () => {
+                this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_ERROR, messageObject);
+              });
             });
-          });
+          } else {
+            handlerError.call(this, messageObject, () => {
+              this.deleteMessage(realID, () => {
+                this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_ERROR, messageObject);
+              });
+            });
+          }
         } else {
           this.deleteMessage(realID, () => {
             this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_ERROR, messageObject);
@@ -158,22 +238,37 @@ class MessageQueue extends EventEmitter {
       }
       return;
     }
-    if (handler) {
+    if (typeof handler === 'function') {
       try {
         logger.debug('Current thread is handing message %s', realID);
         this.emit(MessageQueue.EVENT_HANDLE_MESSAGE, messageObject);
-        handler.call(this, messageObject, (err) => {
-          if (err) {
-            logger.error('Handle message error %s', err);
-            messageObject.retryTimes++;
-            this.returnMessage(realID, messageObject);
-          } else {
+        if (isAsyncFunction(handler)) {
+          handler.call(this, messageObject, EMPTY_FUNCTION).then(() => {
             this.deleteMessage(realID, () => {
               logger.debug('Handle message success, cost: %d', Date.now() - start);
               this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_SUCCESS, messageObject);
             });
-          }
-        });
+          }).catch(e => {
+            if (e) {
+              logger.error('Handle message error %s', e);
+            }
+            messageObject.retryTimes++;
+            this.returnMessage(realID, messageObject);
+          })
+        } else {
+          handler.call(this, messageObject, (err) => {
+            if (err) {
+              logger.error('Handle message error %s', err);
+              messageObject.retryTimes++;
+              this.returnMessage(realID, messageObject);
+            } else {
+              this.deleteMessage(realID, () => {
+                logger.debug('Handle message success, cost: %d', Date.now() - start);
+                this.emit(MessageQueue.EVENT_HANDLE_MESSAGE_SUCCESS, messageObject);
+              });
+            }
+          });
+        }
       } catch (e) {
         // 处理消息失败，则交给其他人处理
         logger.error("Handle message error.", e);
@@ -187,7 +282,7 @@ class MessageQueue extends EventEmitter {
     }
   }
   borrowMessage(realID, done, iCount = 0) {
-    if (iCount >= this.options.borrowRetryTimes) {
+    if (iCount >= this.options.maxBorrowRetryTimes) {
       this.unregister(this.queueID, true, () => {
         this.isHandling = false;
         done && done(new Error("Expires borrow retry time."));
@@ -243,7 +338,7 @@ class MessageQueue extends EventEmitter {
     });
   }
   returnMessage(realID, messageBean, done = null, iCount = 0) {
-    if (iCount >= this.options.returnRetryTimes) {
+    if (iCount >= this.options.maxReturnRetryTimes) {
       // 最多重试两次，如果还是不行，则放弃治疗
       this.register(() => {
         this.isHandling = false;
@@ -346,7 +441,10 @@ class MessageQueue extends EventEmitter {
             this.isHandling = false;
           });
         } else {
-          let value = SafeObject.parse(data.toString(this.options.charset));
+          let value = null;
+          if (data && data.length) {
+            value = SafeObject.parse(data.toString(this.options.charset));
+          }
           this.messageCount = stat.numChildren;
           logger.debug('Message count: %d', this.messageCount);
           if (Array.isArray(value) && value.length > 0) {
@@ -368,7 +466,7 @@ class MessageQueue extends EventEmitter {
                   }
                 })
               }
-            })
+            });
           } else {
             this.isHandling = false;
             this.handleMessage(true);
@@ -417,11 +515,11 @@ class MessageQueue extends EventEmitter {
           // 处理消息
           this.messageCount = list.length;
           logger.debug('Message count: %d, read cost: %d', list.length, Date.now() - start);
-          let isOpenCache = this.messageCount > this.options.messageCacheTriggerCount &&
-            this.options.messageCacheTriggerCount > 0;
+          let isOpenCache = this.messageCount > this.options.cacheTriggerCount &&
+            this.options.cacheTriggerCount > 0;
           start = Date.now();
           if (isOpenCache) {
-            let cacheList = MessageUtils.getTop(list, this.options.messageCacheMaxCount);
+            let cacheList = MessageUtils.getTop(list, this.options.maxCacheSize);
             logger.debug('Message sort: %d, cost: %d', cacheList.length, Date.now() - start);
             let item = cacheList.shift();
             if (!this.isMessageCacheOn) {
@@ -634,7 +732,7 @@ class MessageQueue extends EventEmitter {
   }
   register(done) {
     if (this.isConnected &&
-      this.registerRetryTimes <= this.registerRetryMaxTimes) {
+      this.registerRetryTimes <= this.maxRegisterRetryTimes) {
       let queuePath = this.queuePath;
       let id = this.connectionID;
       let path = `${queuePath}/${id}`;
@@ -658,6 +756,30 @@ class MessageQueue extends EventEmitter {
           }
         });
     }
+  }
+  push(content, done) {
+    if (content === null && content === undefined) {
+      return typeof done === 'function' && done(new Error('Content can not be '))
+    }
+    let _content = null;
+    if (typeof content === "object") {
+      _content = SafeObject.stringify(content);
+    } else {
+      _content = content.toString();
+    }
+    let id = uuid();
+    this.appendMessage(id, _content, done);
+  }
+  async pushPromise(content) {
+    return new Promise((resolve, reject) => {
+      this.push(content, (err, messageBean) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(messageBean);
+        }
+      });
+    });
   }
 }
 

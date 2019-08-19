@@ -14,7 +14,7 @@ const messageService = new MessageQueue({
   path: '/zkconfig/video_dev',
   username: 'zkconfig',
   password: 'zkconfig',
-  handle: async (messageBean, done) => {
+  handle: (messageBean, done) => {
     // handle message
     logger.info('Handle message: ', messageBean);
     setTimeout(() => {
@@ -26,7 +26,7 @@ const messageService = new MessageQueue({
       }
     }, 1);
   },
-  handleError: async (messageBean, done) => {
+  handleError: (messageBean, done) => {
     // 处理错误消息
     logger.info('Handle error message: ', messageBean);
     done();
@@ -57,15 +57,19 @@ messageService.connect();
   * messageCacheTriggerCount: the trigger count for message queue to switch cache hint on, which in other words, if the length of message queue is bigger than this value, the cache will switch on automatically. default is `100`,
   * messageCacheMaxCount: the max size of cache. which means how many messages can cache store. default is `50`;
   * messageCacheRetryTimes: the max retry times for save cache, default is `2`;
-  * handle: A method to handle the consumed message.
+  * handle: {Function|AsyncFunction} A function to handle the consumed message.
     - messageObject, an instance of `MessageBean`;
-    - done, a callback function which must be called after the handing operation. You can pass an error parameter to the function to indicate the a failure.
-  * handleError: A method to handle the error message.
+    - done, optional, a callback function which must be called after the handing operation. You can pass an error parameter to the function to indicate the a failure. This parameter is ignore.
+  * handleError: {Function|AsyncFunction} A method to handle the error message.
     - messageObject, an instance of `MessageBean`;
+    - done, optional, a callback function which must be called after the handling operation. You can pass an error parameter to indicate a failure operation. If the `handleError` function is an AsyncFunction, This parameter is ignore.
 - appendMessage(id, message, callback), append a message to message queue. the done method will be be called while appending success or fail.
   - id: String, the id of the message, please make this an uniq.
   - message: String, the message content.
   - callback: callback function, (Error, messageBean), an error parameter will be taken if an error has been thrown.
+
+* push(content, done), append a message content to message queue. `done` method will be called whether success or fail.
+* `async` pushPromise(content), append a message content to message queue.
 
 * returnPeddingMessages(done), return the pedding messages to the message queue.
   - callback: callback function, (Error).
@@ -80,38 +84,39 @@ eg:
 
 ```javascript
 const MessageQueue = require('zkmessage-queue');
-const uuid = require('uuid');
-
 const queue = new MessageQueue(options);
 
-queue.appendMessage(uuid(), 'A test message', (err, messageBean) => {
+queue.push('A test message', (err, messageBean) => {
   if (err) {
     console.error(err);
   } else {
     console.info(messageBean);
   }
 });
+
+// if in a async function
+await queue.pushPromise('A test message');
 ```
 
 ## Operations
 
 There are three ways to change the message queue:
 
-1. Append operation by calling the `appendMessage` method.
+1. Append message by calling the `push` or `pushPromise` method.
 2. Return pedding message to message queue by calling the `returnPeddingMessages`.
-3. Consume operation automatically, which the `handle` method will be called.
+3. Consume message automatically, which the `handle` method will be called.
 
 ## Events
 
 Some event will be trigged, the event list is as follow:
 
-- EVENT_CONNECT_SUCCESS, fired when connect successfully.
-- EVENT_CONNECT_ERROR, fired when connect fail.
-- EVENT_ERROR, fire an error occor.
-- EVENT_INCOMING_MESSAGE, fired when a message is appended successfully.
-- EVENT_HANDLE_MESSAGE, fired when a message is handled successfully.
-- EVENT_HANDLE_MESSAGE_ERROR, fired after `handleError` has been called.
-- EVENT_REMOVE_MESSAGE, fired when a message has been removed successfully(delete from pedding queue).
+- `EVENT_CONNECT_SUCCESS`, fired when connect successfully.
+- `EVENT_CONNECT_ERROR`, fired when connect fail.
+- `EVENT_ERROR`, fire an error occor.
+- `EVENT_INCOMING_MESSAGE`, fired when a message is appended successfully.
+- `EVENT_HANDLE_MESSAGE`, fired when a message is handled successfully.
+- `EVENT_HANDLE_MESSAGE_ERROR`, fired after `handleError` has been called.
+- `EVENT_REMOVE_MESSAGE`, fired when a message has been removed successfully(delete from pedding queue).
 
 You can bind an event handler like this:
 
@@ -119,5 +124,7 @@ You can bind an event handler like this:
 const MessageQueue = require('zkmessage-queue');
 
 let queue = new MessageQueue(...)
-queue.on(MessageQueue.EVENT_CONNECT_SUCESS)
+queue.on(MessageQueue.EVENT_CONNECT_SUCESS, () => {
+  // handle an connect success event.
+})
 ```
