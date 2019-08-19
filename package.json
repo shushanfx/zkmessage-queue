@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "nodemon tests/server.js",
-    "changelog": "conventional-changelog -p angular -i CHANGELOG.md -w -r 0"
+    "changelog": "conventional-changelog -p angular -i CHANGELOG.md -o CHANGELOG.md -u -r 1"
   },
   "repository": {
     "type": "git",
